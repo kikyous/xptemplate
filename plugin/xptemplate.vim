@@ -1,5 +1,5 @@
 " GetLatestVimScripts: 2611 1 :AutoInstall: xpt.tgz
-" VERSION: 0.4.9.150618-f245ff1
+" VERSION: 0.4.9.150620-bd611e8
 if exists( "g:__XPTEMPLATE_VIM__" ) && g:__XPTEMPLATE_VIM__ >= XPT#ver
 	finish
 endif
@@ -78,13 +78,15 @@ fun! s:FallbackKey()
 endfunction
 fun! XPTemplateKeyword(val)
 	let x = b:xptemplateData
+	let ftScope = x.filetypes[x.snipFileScope.filetype]
+	let ftkeyword = ftScope.ftkeyword
 	let val = substitute(a:val, '\w', '', 'g')
 	let val = string(val)[1 : -2]
 	let needEscape = '^\]-'
-	let x.keywordList += split( val, '\v\s*' )
-	call sort(x.keywordList)
-	let x.keywordList = split( substitute( join( x.keywordList, '' ), '\v(.)\1+', '\1', 'g' ), '\v\s*' )
-	let x.keyword = '\[0-9A-Za-z_' . escape( join( x.keywordList, '' ), needEscape ) . ']'
+	let ftkeyword.list += split( val, '\v\s*' )
+	call sort(ftkeyword.list)
+	let ftkeyword.list = split( substitute( join( ftkeyword.list, '' ), '\v(.)\1+', '\1', 'g' ), '\v\s*' )
+	let ftkeyword.regexp = '\[0-9A-Za-z_' . escape( join( ftkeyword.list, '' ), needEscape ) . ']'
 endfunction
 fun! XPTemplatePriority(...)
 	let x = b:xptemplateData
@@ -572,18 +574,24 @@ fun! XPTemplateStart(pos_unused_any_more,...)
 	elseif x.wrapStartPos
 		let startColumn = x.wrapStartPos
 	else
+		let ftScope = s:GetContextFTObj()
+		let ftkeyword = ftScope.ftkeyword
 		let columnBeforeCursor = col( "." ) - 2
 		if columnBeforeCursor >= 0
 			let lineToCursor = getline(startLineNr)[0 : columnBeforeCursor]
 		else
 			let lineToCursor = ''
 		endif
-		let ftScope = s:GetContextFTObj()
 		let pre = ftScope.namePrefix
 		let n = split( lineToCursor, '\s', 1 )[ -1 ]
-		let snpt_name_ptn = '\V\^' . x.keyword . '\w\*\|\^\W'
+		let snpt_name_ptn = '\V\^\(' . ftkeyword.regexp . '\|\k\)\k\*'
 		while n != '' && !has_key( pre, n )
-			let n = substitute( n, snpt_name_ptn, '', '' )
+			let shorter = substitute( n, snpt_name_ptn, '', '' )
+			if shorter == n
+				let n = n[1 :]
+			else
+				let n = shorter
+			endif
 		endwhile
 		let matched = n
 		if !has_key( opt, 'popupOnly' )
@@ -1882,40 +1890,8 @@ fun! s:SelectCurrent()
 endfunction
 fun! s:EvalFilter(filter,closures)
 	let rctx = b:xptemplateData.renderContext
-	let snipptn = rctx.snipObject.ptn
-	let r = { 'rc': 1, 'filter': a:filter }
-	let rst = xpt#eval#Eval(a:filter.text,a:closures)
-	if type(rst) == type(0)
-		let r.rc = 0
-		return r
-	endif
-	if type( rst ) == type( '' )
-		if rst =~ snipptn.lft
-			let r.action = 'build'
-		else
-			let r.action = 'text'
-		endif
-		let r.text = rst
-		return r
-	endif
-	if type(rst) == type([])
-		let r.action = 'pum'
-		let r.pum = rst
-		return r
-	endif
-	if has_key( rst, 'action' )
-		call extend( r, rst, 'error' )
-		if r.action ==# 'embed'
-			let r.action = 'build'
-		endif
-	else
-		let text = get( r, 'text', '' )
-		if text =~ snipptn.lft
-			let r.action = 'build'
-		else
-			let r.action = 'text'
-		endif
-	endif
+	let snip = rctx.snipObject
+	let r = xpt#flt#Eval(snip,a:filter,a:closures)
 	call s:LoadFilterActionSnippet(r)
 	return r
 endfunction
@@ -2165,17 +2141,17 @@ fun! s:UpdateMarksAccordingToLeaderChanges(renderContext)
 		call XPMsetLikelyBetween(leaderMark.start,leaderMark.end)
 	endif
 	let rc = XPMupdate()
-	if g:xptemplate_strict == 2 && a:renderContext.phase == 'fillin'
+	if a:renderContext.phase == 'fillin'
 		if rc is g:XPM_RET.updated || (type(rc) == type([]) && (rc[0] != leaderMark.start && rc[0] != innerMarks.start || rc[1] != leaderMark.end && rc[1] != innerMarks.end))
-			throw 'XPT:changes outside of place holder'
-		endif
-	endif
-	if g:xptemplate_strict == 1 && a:renderContext.phase == 'fillin' && rc is g:XPM_RET.updated
-		if rc is g:XPM_RET.updated || (type(rc) == type([]) && (rc[0] != leaderMark.start && rc[0] != innerMarks.start || rc[1] != leaderMark.end && rc[1] != innerMarks.end))
-			undo
-			call XPMupdate()
-			call XPT#warn( "editing OUTSIDE place holder is not allowed whne g:xptemplate_strict=1, use " . g:xptemplate_goback . " to go back" )
-			return g:XPT_RC.canceled
+			if g:xptemplate_strict == 2
+				throw 'XPT:changes outside of place holder'
+			elseif g:xptemplate_strict == 1
+				undo
+				call XPMupdate()
+				call XPT#warn( "editing OUTSIDE place holder is not allowed whne g:xptemplate_strict=1, use " . g:xptemplate_goback . " to go back" )
+				return g:XPT_RC.canceled
+			else
+			endif
 		endif
 	endif
 	return rc
@@ -2202,9 +2178,6 @@ endfunction
 fun! s:DoUpdate(renderContext,changeType)
 	let renderContext = a:renderContext
 	let contentTyped = xpt#util#TextBetween(XPMposStartEnd(renderContext.leadingPlaceHolder.mark))
-	if contentTyped ==# renderContext.lastContent
-		return
-	endif
 	call s:CallPlugin("update", 'before')
 	if type(a:changeType) == type([]) || a:changeType is g:XPM_RET.likely_matched || a:changeType is g:XPM_RET.no_updated_made
 		let relPos = s:RecordRelativePosToMark( [ line( '.' ), col( '.' ) ], renderContext.leadingPlaceHolder.mark.start )
@@ -2279,7 +2252,7 @@ augroup XPT
 	au!
 	au BufEnter * call XPTemplateInit()
 	au InsertEnter * call <SID>XPTcheck()
-	au CursorMovedI * call <SID>XPTupdateTyping()
+	au CursorMoved,CursorMovedI * call <SID>XPTupdateTyping()
 	if g:xptemplate_strict == 1
 		au CursorMovedI * call <SID>BreakUndo()
 	endif

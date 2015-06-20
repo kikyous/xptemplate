@@ -1,3 +1,14 @@
+2015-06-20
+==========
+
+Fixed
+-----
+
+*   engine: normal-mode "x" breaks xpt
+
+*   snippet-matching: snippet key should be stored in filetype instead of buffer
+*   snippet-matching: use keyword instead of word
+
 2015-06-17
 ==========
 

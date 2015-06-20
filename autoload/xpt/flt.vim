@@ -23,24 +23,43 @@ endfunction
 fun! xpt#flt#Simplify(flt)
 	call filter( a:flt, 'v:val!=get(s:proto,v:key,-987654)' )
 endfunction
-fun! xpt#flt#Eval(flt,closures)
+fun! xpt#flt#Eval(snip,flt,closures)
+	let snipptn = a:snip.ptn
 	let r = { 'rc' : 1 }
 	let rst = xpt#eval#Eval(a:flt.text,a:closures)
 	if type(rst) == type(0)
 		let r.rc = 0
-	elseif type( rst ) == type( '' )
-		call extend( r, { 'action': 'build', 'text' : rst } )
-	elseif type(rst) == type([])
-		call extend( r, { 'action' : 'pum', 'pum' : rst } )
-	else
-		if has_key( rst, 'action' )
-			call extend( r, rst, 'error' )
+		return r
+	endif
+	if type( rst ) == type( '' )
+		if rst =~ snipptn.lft
+			let r.action = 'build'
 		else
-			r.action = 'build'
+			let r.action = 'text'
 		endif
-		if has_key( r, 'cursor' )
-			call xpt#flt#ParseCursorSpec(r)
+		let r.text = rst
+		return r
+	endif
+	if type(rst) == type([])
+		let r.action = 'pum'
+		let r.pum = rst
+		return r
+	endif
+	if has_key( rst, 'action' )
+		call extend( r, rst, 'error' )
+		if r.action ==# 'embed'
+			let r.action = 'build'
 		endif
+	else
+		let text = get( r, 'text', '' )
+		if text =~ snipptn.lft
+			let r.action = 'build'
+		else
+			let r.action = 'text'
+		endif
+	endif
+	if has_key( r, 'cursor' )
+		call xpt#flt#ParseCursorSpec(r)
 	endif
 	return r
 endfunction
