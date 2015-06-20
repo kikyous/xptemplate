@@ -15,17 +15,10 @@
 "     template
 " "}}}
 "
-" KNOWING BUG: "{{{
-"   sh: "else" snippet does not support 'indentkeys' setting.
-"
-" "}}}
-"
 " TODOLIST: "{{{
 " TODO bug: in *.css: type: "* {<CR>" prodcues another "* }" at the next line.
-" TODO duplicate snippet name check
 " in future
 " TODO efficiently loading long snippet file
-" TODO test vim 7.3
 " TODO lazy load of scripts
 " TODO add: be able to load textmate snippet or snipmate snippet.
 " TODO add: <BS> at ph start to shift backward.
@@ -33,14 +26,12 @@
 " TODO improve: 3 quotes in python
 " TODO fix: register handling when snippet expand
 " TODO goto next or trigger?
-" TODO add: visual mode trigger.
 " TODO fix: after undo, highlight is not cleared.
 " TODO with strict = 0/1 XPT does not work well
 " TODO add: XSET to set edge.
 " TODO add: short snippet syntax
 " TODO add: global shortcuts
 " TODO add: context detect
-" TODO fix: versionlize scripts
 " TODO doc of ontype filters, XSET what|map
 " TODO cross file support, .h and .cpp skeletion generator.
 " TODO bug in 114.74, ' and then <C-n> complete, and then <C-y> accept, now ' is between complete start and complete end
@@ -247,7 +238,10 @@ endfunction "}}}
 
 " which letter can be used in template name other than 'iskeyword'
 fun! XPTemplateKeyword(val) "{{{
+
     let x = b:xptemplateData
+    let ftScope   = x.filetypes[ x.snipFileScope.filetype ]
+    let ftkeyword = ftScope.ftkeyword
 
     " word characters are already valid.
     let val = substitute(a:val, '\w', '', 'g')
@@ -255,12 +249,12 @@ fun! XPTemplateKeyword(val) "{{{
     let needEscape = '^\]-'
 
 
-    let x.keywordList += split( val, '\v\s*' )
-    call sort( x.keywordList )
-    let x.keywordList = split( substitute( join( x.keywordList, '' ), '\v(.)\1+', '\1', 'g' ), '\v\s*' )
+    let ftkeyword.list += split( val, '\v\s*' )
+    call sort( ftkeyword.list )
+    let ftkeyword.list = split( substitute( join( ftkeyword.list, '' ), '\v(.)\1+', '\1', 'g' ), '\v\s*' )
 
 
-    let x.keyword = '\[0-9A-Za-z_' . escape( join( x.keywordList, '' ), needEscape ) . ']'
+    let ftkeyword.regexp = '\[0-9A-Za-z_' . escape( join( ftkeyword.list, '' ), needEscape ) . ']'
 
 endfunction "}}}
 
@@ -1136,10 +1130,11 @@ fun! XPTemplateStart(pos_unused_any_more, ...) " {{{
 
         " TODO codes below are dirty. clean it up lazy bone!!
 
-        call s:log.Log("x.keyword=" . x.keyword)
+        let ftScope = s:GetContextFTObj()
+        let ftkeyword = ftScope.ftkeyword
 
-        " TODO test escaping
-        "
+        call s:log.Log("ftkeyword.regexp=" . string(ftkeyword.regexp))
+
         " NOTE: The following statement hangs VIM if x.keyword == '\w'
         " let [startLineNr, startColumn] = searchpos('\V\%(\w\|'. x.keyword .'\)\+\%#', "bn", startLineNr )
 
@@ -1150,20 +1145,23 @@ fun! XPTemplateStart(pos_unused_any_more, ...) " {{{
             let lineToCursor = ''
         endif
 
-        let ftScope = s:GetContextFTObj()
         let pre = ftScope.namePrefix
         let n = split( lineToCursor, '\s', 1 )[ -1 ]
-
-        " TODO use filetype.keyword
-        " TODO in php $se should not trigger snippet 'se'
 
         " <non-keyword><keyword> is not breakable: $var in php
         " <keyword><non-keyword> is breakable: func( in c
 
         " search for valid snippet name or single non-keyword name
-        let snpt_name_ptn = '\V\^' . x.keyword . '\w\*\|\^\W'
+        let snpt_name_ptn = '\V\^\(' . ftkeyword.regexp . '\|\k\)\k\*'
         while n != '' && !has_key( pre, n )
-            let n = substitute( n, snpt_name_ptn, '', '' )
+            let shorter = substitute( n, snpt_name_ptn, '', '' )
+
+            " no keyword or xpt-keyword stripted, strip one non-keyword
+            if shorter == n
+                let n = n[ 1 : ]
+            else
+                let n = shorter
+            endif
         endwhile
         let matched = n
 
@@ -3605,8 +3603,6 @@ fun! s:ClearItemMapping( rctx ) "{{{
 
 endfunction "}}}
 
-
-
 fun! s:SelectCurrent() "{{{
     let ph = b:xptemplateData.renderContext.leadingPlaceHolder
     let marks = ph.innerMarks
@@ -3659,62 +3655,10 @@ fun! s:EvalFilter( filter, closures ) "{{{
 
     " TODO EvalFilter might be called from non-rendering phase, is there a snipObject?
     let rctx = b:xptemplateData.renderContext
-    let snipptn = rctx.snipObject.ptn
+    let snip = rctx.snipObject
 
-    let r = { 'rc': 1, 'filter': a:filter }
-
-    let rst = xpt#eval#Eval( a:filter.text, a:closures )
-    call s:log.Debug( "rst after xpt#eval#Eval=" . string( rst ) )
-
-    if type( rst ) == type( 0 )
-        let r.rc = 0
-        return r
-    endif
-
-    if type( rst ) == type( '' )
-
-        " plain text is interpreted as plain text or snippet segment, depends
-        " on if there is mark in it.
-        "
-        " To explicitly use plain text or snippet segment, use Echo() and
-        " Build() respectively.
-        if rst =~ snipptn.lft
-            let r.action = 'build'
-        else
-            let r.action = 'text'
-        endif
-        let r.text = rst
-        return r
-    endif
-
-    if type( rst ) == type( [] )
-        let r.action = 'pum'
-        let r.pum = rst
-        return r
-
-    endif
-
-    " rst is dictionary
-    if has_key( rst, 'action' )
-        call extend( r, rst, 'error' )
-
-        " backward compatible
-        if r.action ==# 'embed'
-            let r.action = 'build'
-        endif
-    else
-        let text = get( r, 'text', '' )
-
-        " effective action is determined by if there is item pattern in text
-        if text =~ snipptn.lft
-            let r.action = 'build'
-        else
-            let r.action = 'text'
-        endif
-    endif
-
+    let r = xpt#flt#Eval( snip, a:filter, a:closures )
     call s:LoadFilterActionSnippet( r )
-
     return r
 
 endfunction "}}}
@@ -4195,8 +4139,6 @@ fun! s:UpdateMarksAccordingToLeaderChanges( renderContext ) "{{{
         throw 'XPM:mark_lost:' . string( start[0] == 0 ? leaderMark.start : leaderMark.end )
     endif
 
-
-
     " call XPMsetLikelyBetween( leaderMark.start, leaderMark.end )
     if XPMhas( innerMarks.start, innerMarks.end )
         call XPMsetLikelyBetween( innerMarks.start, innerMarks.end )
@@ -4207,40 +4149,31 @@ fun! s:UpdateMarksAccordingToLeaderChanges( renderContext ) "{{{
     let rc = XPMupdate()
     call s:log.Log( 'rc=' . string(rc) . ' phase=' . string(a:renderContext.phase) . ' strict=' . g:xptemplate_strict )
 
-    if g:xptemplate_strict == 2
-                \&& a:renderContext.phase == 'fillin'
+    if a:renderContext.phase == 'fillin'
 
         if rc is g:XPM_RET.updated
               \ || ( type( rc ) == type( [] )
               \      && ( rc[ 0 ] != leaderMark.start && rc[ 0 ] != innerMarks.start
               \        || rc[ 1 ] != leaderMark.end && rc[ 1 ] != innerMarks.end ) )
 
-            throw 'XPT:changes outside of place holder'
+            if g:xptemplate_strict == 2
 
-        endif
+                throw 'XPT:changes outside of place holder'
 
-    endif
+            elseif g:xptemplate_strict == 1
 
-    if g:xptemplate_strict == 1
-                \&& a:renderContext.phase == 'fillin'
-                \&& rc is g:XPM_RET.updated
-        " g:XPM_RET.updated means update made but not in likely range
+                undo
+                call XPMupdate()
 
-        if rc is g:XPM_RET.updated
-              \ || ( type( rc ) == type( [] )
-              \      && ( rc[ 0 ] != leaderMark.start && rc[ 0 ] != innerMarks.start
-              \        || rc[ 1 ] != leaderMark.end && rc[ 1 ] != innerMarks.end ) )
+                " TODO better hint
+                " TODO allow user to move?
 
-            undo
-            call XPMupdate()
+                call XPT#warn( "editing OUTSIDE place holder is not allowed whne g:xptemplate_strict=1, use " . g:xptemplate_goback . " to go back" )
 
-            " TODO better hint
-            " TODO allow user to move?
-
-            call XPT#warn( "editing OUTSIDE place holder is not allowed whne g:xptemplate_strict=1, use " . g:xptemplate_goback . " to go back" )
-
-            return g:XPT_RC.canceled
-
+                return g:XPT_RC.canceled
+            else
+                 " == 0
+            endif
         endif
     endif
 
@@ -4290,17 +4223,14 @@ fun! s:DoUpdate( renderContext, changeType ) "{{{
 
     let contentTyped = xpt#util#TextBetween( XPMposStartEnd( renderContext.leadingPlaceHolder.mark ) )
 
-    if contentTyped ==# renderContext.lastContent
-        call s:log.Log( "nothing different typed" )
-        return
-    endif
+    " if contentTyped ==# renderContext.lastContent
+    "     call s:log.Log( "nothing different typed" )
+    "     return
+    " endif
 
     call s:log.Log( "typed:" . contentTyped )
 
-
     call s:CallPlugin("update", 'before')
-
-
 
     " update items
 
@@ -4310,14 +4240,10 @@ fun! s:DoUpdate( renderContext, changeType ) "{{{
     call s:log.Log( "lastContent=".renderContext.lastContent )
     call s:log.Log( "contentTyped=".contentTyped )
 
-
-
-
     " NOTE: sometimes, update is made before key mapping finished. Thus XPTupdate can not catch likely_matched result
     if type( a:changeType ) == type( [] )
           \ || a:changeType is g:XPM_RET.likely_matched
           \ || a:changeType is g:XPM_RET.no_updated_made
-
 
         call s:log.Log( "marks before updating following:\n" . XPMallMark() )
 
@@ -4327,14 +4253,9 @@ fun! s:DoUpdate( renderContext, changeType ) "{{{
         call s:UpdateFollowingPlaceHoldersWith( contentTyped, {} )
         call s:GotoRelativePosToMark( relPos, renderContext.leadingPlaceHolder.mark.start )
 
-
-
     else
         " TODO undo-redo handling
-
     endif
-
-
 
     call s:CallPlugin('update', 'after')
 
@@ -4432,7 +4353,7 @@ augroup XPT "{{{
 
     au InsertEnter * call <SID>XPTcheck()
 
-    au CursorMovedI * call <SID>XPTupdateTyping()
+    au CursorMoved,CursorMovedI * call <SID>XPTupdateTyping()
 
     if g:xptemplate_strict == 1
         au CursorMovedI * call <SID>BreakUndo()
